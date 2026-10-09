@@ -1,0 +1,1049 @@
+---
+schema_version: 1
+stack:
+  id: node
+  name: Node.js (Express and NestJS)
+  prefix: NODE
+  scope: >-
+    Verification checklist for Node.js services built with Express 4/5 or NestJS 10 and later,
+    covering server-rendered applications and JSON or GraphQL APIs authenticated with
+    cookie sessions (express-session, Passport) or bearer tokens (JWT).
+standards:
+  asvs: "5.0.0"
+  api_top10: "2023"
+sections:
+  - id: authentication
+    code: AUTHN
+    title: Authentication
+    intro: >-
+      Express and NestJS provide no authentication by default. Every control below depends on
+      application code or on libraries such as Passport, so review the code that is deployed.
+    items:
+      - id: NODE-AUTHN-001
+        title: Minimum password length is enforced server-side
+        asvs: V6.2.1
+        level: 1
+        api_top10: [API2:2023]
+        summary: >-
+          User-chosen passwords must be at least 8 characters; 15 or more is strongly recommended.
+        verification: |-
+          - Locate the schema for registration, password change and password reset (zod, joi,
+            class-validator DTOs) and confirm a minimum of 8 or more, for example
+            `z.string().min(8)` or `@MinLength(8)`.
+          - Define the policy once and reuse it in all three flows.
+          - Submit a 7-character password to each flow and confirm a 400 or 422 response.
+        evidence: >-
+          Schema definitions with file paths; request/response pair showing rejection.
+
+      - id: NODE-AUTHN-002
+        title: No character composition rules are imposed
+        asvs: V6.2.5
+        level: 1
+        api_top10: [API2:2023]
+        summary: >-
+          Passwords of any composition are accepted; there is no requirement for upper or lower
+          case letters, digits or special characters.
+        verification: |-
+          - class-validator `@IsStrongPassword()` with default options requires at least one
+            lowercase, uppercase, digit and symbol, which fails this requirement. Search for it
+            and for password regular expressions (`.regex(` in zod, `.pattern(` in joi).
+          - Length and breached-password checks are the intended replacement.
+        evidence: >-
+          Search output showing no composition rules, or the change that removed them.
+
+      - id: NODE-AUTHN-003
+        title: New passwords are checked against breached password data
+        asvs: V6.2.12
+        level: 2
+        related_asvs: [V6.2.4]
+        api_top10: [API2:2023]
+        summary: >-
+          Passwords submitted at registration or change are checked against a set of breached
+          passwords.
+        verification: |-
+          - Confirm a breached-password check exists, for example the Have I Been Pwned range API
+            (`https://api.pwnedpasswords.com/range/<first 5 SHA-1 hex chars>`), which uses
+            k-anonymity so the full hash never leaves the server, or an offline list.
+          - Confirm the behaviour on lookup failure is documented (fail open or fail closed) and
+            that the call has a timeout.
+        evidence: >-
+          Implementation code; test showing a known breached password is rejected.
+
+      - id: NODE-AUTHN-004
+        title: Long passwords are accepted and verified without truncation
+        asvs: V6.2.9
+        level: 2
+        related_asvs: [V6.2.8]
+        api_top10: [API2:2023]
+        summary: >-
+          Passwords of at least 64 characters are permitted and are verified exactly as received.
+        verification: |-
+          - Confirm no maximum length below 64 is enforced.
+          - `bcrypt` and `bcryptjs` only process the first 72 bytes. Prefer `argon2` (Argon2id),
+            or reject inputs longer than 72 bytes explicitly instead of truncating silently.
+          - Confirm the password is not trimmed or case-normalized (zod `.trim()`,
+            class-transformer `@Transform`, `toLowerCase()`) before hashing or comparison.
+        evidence: >-
+          Hashing library and schema; test showing a 64-character password works end to end.
+
+      - id: NODE-AUTHN-005
+        title: Passwords are stored with an approved password hashing function
+        asvs: V11.4.2
+        level: 2
+        summary: >-
+          Passwords are stored using a computationally intensive key derivation function with
+          parameters set according to current guidance.
+        verification: |-
+          - Confirm passwords are hashed with `argon2` (Argon2id), `bcrypt` or `crypto.scrypt`,
+            never with `crypto.createHash()` (MD5, SHA-1, SHA-256) or reversible encryption.
+          - Compare parameters (Argon2id memory, iterations and parallelism; bcrypt cost) with
+            the OWASP Password Storage Cheat Sheet.
+          - Confirm a rehash-on-login path exists so parameter increases reach existing users.
+        evidence: >-
+          Hashing code and parameters; a sample stored hash prefix (`$argon2id$`, `$2b$`) from a
+          non-production database.
+
+      - id: NODE-AUTHN-006
+        title: Login is protected against brute force and credential stuffing
+        asvs: V6.3.1
+        level: 1
+        related_asvs: [V6.1.1]
+        api_top10: [API2:2023, API4:2023]
+        summary: >-
+          Controls against credential stuffing and password brute force are implemented as
+          defined in the application's security documentation.
+        verification: |-
+          - Identify every credential-accepting endpoint: login, token issuance, refresh, MFA
+            verification, password confirmation and password reset.
+          - Confirm each is rate limited: `express-rate-limit` or `rate-limiter-flexible` in
+            Express, `@nestjs/throttler` (`ThrottlerGuard`, `@Throttle()`) in NestJS.
+          - Key limits on both account identifier and client IP, and use a shared store (Redis)
+            when the service runs as several instances; the default in-memory stores are
+            per-process.
+          - Confirm the client IP is correct behind proxies (see the trusted proxy item).
+        evidence: >-
+          Limiter configuration; repeated failed logins showing HTTP 429.
+
+      - id: NODE-AUTHN-007
+        title: Authentication responses do not reveal whether an account exists
+        asvs: V6.3.8
+        level: 3
+        api_top10: [API2:2023]
+        summary: >-
+          Valid users cannot be inferred from error messages, status codes or response timing in
+          login, registration and password reset.
+        verification: |-
+          - Confirm login returns the same status and message for unknown users and wrong
+            passwords. Passport `LocalStrategy` callbacks often return distinct `message`
+            values; check what reaches the client.
+          - When the user does not exist, confirm the code still performs a password hash
+            verification against a fixed dummy hash so response timing does not differ.
+          - Confirm password reset returns the same response for every address, and that
+            registration does not disclose existing accounts where this matters.
+        evidence: >-
+          Side-by-side responses and timing samples for existing and non-existing accounts.
+
+      - id: NODE-AUTHN-008
+        title: No default or seeded accounts exist in production
+        asvs: V6.3.2
+        level: 1
+        summary: >-
+          Default accounts such as "admin" or "root" are not present or are disabled.
+        verification: |-
+          - Review seed scripts (Prisma `prisma/seed.ts`, TypeORM or Sequelize seeders, Knex
+            seeds) and migrations for user inserts with fixed credentials.
+          - Confirm seeding is not part of the production deployment, or is environment-guarded.
+          - Query the production user table for well-known names and addresses.
+        evidence: >-
+          Seed script review; deployment pipeline step list; production query result (counts
+          only).
+
+      - id: NODE-AUTHN-009
+        title: Password reset does not bypass multi-factor authentication
+        asvs: V6.4.3
+        level: 2
+        api_top10: [API2:2023]
+        summary: >-
+          Forgotten-password recovery is secure and does not bypass any enabled multi-factor
+          authentication.
+        verification: |-
+          - If the reset endpoint issues a session or token on success, confirm it is a
+            partially authenticated state that still requires the second factor.
+          - Confirm reset tokens are generated with `crypto.randomBytes()` (or
+            `crypto.randomUUID()`), stored hashed, single use and short-lived.
+        evidence: >-
+          Reset handler code; recorded flow for an MFA-enabled test account.
+
+      - id: NODE-AUTHN-010
+        title: One-time passwords cannot be replayed
+        asvs: V6.5.1
+        level: 2
+        api_top10: [API2:2023]
+        summary: >-
+          Lookup secrets (recovery codes), out-of-band codes and TOTP values can be used
+          successfully only once.
+        verification: |-
+          - TOTP libraries such as `otplib` and `speakeasy` validate a code against the time
+            window but do not track usage. Confirm the application stores the last accepted
+            time step per user and rejects codes at or before it.
+          - Confirm recovery codes and email/SMS codes are deleted or marked used atomically on
+            first successful use.
+          - Test by submitting the same valid code twice.
+        evidence: >-
+          Verification code; request log showing the replay rejected.
+
+      - id: NODE-AUTHN-011
+        title: Authentication events are logged
+        asvs: V16.3.1
+        level: 2
+        summary: >-
+          All authentication operations, successful and unsuccessful, are logged with relevant
+          metadata such as authentication type or factors used.
+        verification: |-
+          - Confirm login success and failure, logout, lockout, MFA verification, password
+            change and reset emit structured log events (pino, winston or the Nest `Logger`).
+          - Each event should include timestamp, user or attempted identifier, client IP, user
+            agent, method and outcome.
+          - Confirm request logging middleware (`pino-http`, `morgan`) redacts `Authorization`,
+            `Cookie` and password fields; pino supports a `redact` option for this.
+        evidence: >-
+          Logging code and redaction configuration; sample entries from a non-production run.
+
+  - id: session-management
+    code: SESS
+    title: Session management
+    intro: >-
+      Applies to cookie-based sessions with express-session (directly or through Passport).
+      Bearer-token authentication is covered in the Tokens section.
+    items:
+      - id: NODE-SESS-001
+        title: Session identifier is regenerated on authentication
+        asvs: V7.2.4
+        level: 1
+        api_top10: [API2:2023]
+        zap: [40013]
+        summary: >-
+          A new session token is generated on authentication and re-authentication, and the
+          previous token is terminated.
+        verification: |-
+          - express-session does not regenerate the session on login by itself. Confirm the
+            login handler calls `req.session.regenerate()` before storing the user.
+          - Passport 0.6.0 and later regenerate the session inside `req.login()`. Confirm the
+            installed version and that no custom code writes the user into `req.session`
+            without going through `req.login()`.
+          - Test: record the session cookie before login, authenticate, confirm it changed and
+            the old value is rejected.
+        evidence: >-
+          Login handler code; `passport` version from the lockfile; cookie values before and
+          after login.
+
+      - id: NODE-SESS-002
+        title: Logout invalidates the session on the server
+        asvs: V7.4.1
+        level: 1
+        api_top10: [API2:2023]
+        summary: >-
+          When a session is terminated by logout or expiry, it cannot be used again.
+        verification: |-
+          - Confirm logout calls `req.logout()` (asynchronous with a callback since Passport
+            0.6) and `req.session.destroy()`, and clears the cookie.
+          - For JWT-based sessions, confirm logout revokes the refresh token server-side and
+            that access tokens are short-lived or checked against a revocation list.
+          - Test: copy the session cookie or token, log out, replay it and confirm rejection.
+        evidence: >-
+          Logout handler; replay request and response.
+
+      - id: NODE-SESS-003
+        title: Session cookie has the Secure attribute and a secure prefix
+        asvs: V3.3.1
+        level: 1
+        related_asvs: [V3.3.3]
+        zap: [10011]
+        summary: >-
+          Cookies have the Secure attribute; if the `__Host-` prefix is not used, the
+          `__Secure-` prefix is used.
+        verification: |-
+          - express-session: confirm `cookie.secure: true` in production. Behind a TLS
+            terminating proxy this also requires `app.set('trust proxy', ...)`, otherwise the
+            cookie is not sent.
+          - Set `name` to a value starting with `__Host-` (requires `path: '/'` and no
+            `domain`); the default name `connect.sid` also discloses the stack.
+          - Apply the same attributes to cookies set with `res.cookie()`.
+        evidence: >-
+          Session middleware configuration; `Set-Cookie` headers from staging or production.
+
+      - id: NODE-SESS-004
+        title: Session cookie is not readable by client-side scripts
+        asvs: V3.3.4
+        level: 2
+        zap: [10010]
+        summary: >-
+          Cookies that client-side scripts do not need, such as session tokens, have the HttpOnly
+          attribute.
+        verification: |-
+          - express-session sets `HttpOnly` by default; confirm it is not overridden.
+          - `res.cookie()` does not set `HttpOnly` unless `httpOnly: true` is passed. Review
+            every `res.cookie()` call that stores a token, including JWTs stored in cookies.
+          - Confirm tokens are not also returned in a response body consumed by browser code
+            and stored in `localStorage`.
+        evidence: >-
+          Cookie configuration and call sites; `Set-Cookie` headers.
+
+      - id: NODE-SESS-005
+        title: SameSite is set according to cookie purpose
+        asvs: V3.3.2
+        level: 2
+        zap: [10054]
+        summary: >-
+          Each cookie's SameSite value fits its purpose, limiting cross-site request forgery and
+          UI redress exposure.
+        verification: |-
+          - express-session does not set `SameSite` unless `cookie.sameSite` is configured.
+            Set `lax` or `strict`; `none` needs a documented reason and `secure: true`.
+          - Confirm state-changing endpoints that rely on cookies have CSRF protection in
+            addition to SameSite (synchronizer token, double-submit cookie, or an Origin check).
+            The `csurf` package is deprecated; confirm a maintained alternative is used.
+        evidence: >-
+          Cookie configuration; CSRF mechanism description and test.
+
+      - id: NODE-SESS-006
+        title: Session identifiers have sufficient entropy
+        asvs: V7.2.3
+        level: 1
+        related_asvs: [V7.2.2]
+        api_top10: [API2:2023]
+        summary: >-
+          Reference session tokens are unique, generated with a CSPRNG and have at least 128 bits
+          of entropy.
+        verification: |-
+          - express-session generates IDs with `uid-safe` (24 random bytes). If a custom
+            `genid` is configured, confirm it uses `crypto.randomBytes()` or
+            `crypto.randomUUID()`, not `Math.random()`, timestamps or counters.
+          - Confirm `secret` is a high-entropy value loaded from configuration, not a literal
+            in source code, and supports rotation (an array of secrets).
+          - Confirm the production store is not the default `MemoryStore`, which leaks memory
+            and does not share sessions across instances.
+        evidence: >-
+          Session middleware configuration; secret source; store type.
+
+      - id: NODE-SESS-007
+        title: Inactivity timeout enforces re-authentication
+        asvs: V7.3.1
+        level: 2
+        related_asvs: [V7.1.1]
+        summary: >-
+          An inactivity timeout forces re-authentication according to documented risk decisions.
+        verification: |-
+          - With express-session, an idle timeout needs `rolling: true` (or `req.session.touch()`)
+            together with `cookie.maxAge`, and a store TTL that matches.
+          - Confirm the value matches the documented decision and test it.
+        evidence: >-
+          Configuration values; documented decision; test result.
+
+      - id: NODE-SESS-008
+        title: Absolute session lifetime is enforced
+        asvs: V7.3.2
+        level: 2
+        related_asvs: [V7.1.1]
+        summary: >-
+          An absolute maximum session lifetime forces re-authentication regardless of activity.
+        verification: |-
+          - Neither express-session nor Passport enforces an absolute lifetime. Confirm the
+            authentication time is stored in the session at login and checked by middleware on
+            every request.
+          - For token-based sessions, confirm refresh tokens have an absolute expiry that is not
+            extended by rotation.
+        evidence: >-
+          Middleware code; refresh token issuance code.
+
+      - id: NODE-SESS-009
+        title: Other sessions can be terminated after a credential change
+        asvs: V7.4.3
+        level: 2
+        summary: >-
+          After changing or removing an authentication factor, the user is offered the option to
+          terminate all other active sessions.
+        verification: |-
+          - Confirm sessions can be enumerated per user (for example a Redis set of session IDs
+            per user ID) so they can be destroyed selectively.
+          - For JWTs, confirm a per-user token version or `iat` threshold is checked so that
+            tokens issued before the change are rejected, and refresh tokens are revoked.
+        evidence: >-
+          Implementation code; test with two clients.
+
+      - id: NODE-SESS-010
+        title: Sensitive account changes require re-authentication
+        asvs: V7.5.1
+        level: 2
+        api_top10: [API2:2023]
+        summary: >-
+          Full re-authentication is required before changing attributes that affect
+          authentication, such as email, phone, MFA configuration or recovery data.
+        verification: |-
+          - Confirm endpoints that change email, password, MFA settings and recovery codes
+            require the current password or a fresh second factor in the same request, or a
+            recent authentication timestamp within a documented window.
+        evidence: >-
+          Endpoint list with the re-authentication mechanism for each.
+
+      - id: NODE-SESS-011
+        title: Disabling an account terminates its sessions and tokens
+        asvs: V7.4.2
+        level: 1
+        api_top10: [API2:2023]
+        summary: >-
+          All active sessions are terminated when a user account is disabled or deleted.
+        verification: |-
+          - Confirm the disable or delete action destroys the user's sessions in the store and
+            revokes refresh tokens.
+          - If Passport `deserializeUser` loads the user on each request, confirm it rejects
+            disabled accounts; if it only trusts the serialized object, disabled users keep
+            access until the session expires.
+        evidence: >-
+          Disable/delete action code; `deserializeUser` implementation; test result.
+
+  - id: access-control
+    code: AUTHZ
+    title: Access control
+    intro: >-
+      In Express, authorization is middleware that must be attached to each router; in NestJS,
+      guards must be bound globally or per controller. Missing bindings fail open.
+    items:
+      - id: NODE-AUTHZ-001
+        title: Function-level access requires explicit permission
+        asvs: V8.2.1
+        level: 1
+        api_top10: [API5:2023]
+        summary: >-
+          Access to functions is restricted to consumers with explicit permissions.
+        verification: |-
+          - NestJS: prefer a global authentication guard (`APP_GUARD`) with an explicit
+            `@Public()` metadata opt-out, plus a roles or permissions guard that reads metadata
+            through `Reflector`. Confirm handlers without role metadata are denied, not allowed.
+          - Express: confirm authorization middleware is mounted on each router before route
+            handlers, and that routes registered before the middleware are intentionally public.
+          - Test administrative endpoints with a low-privilege token and expect 403.
+        evidence: >-
+          Guard or middleware registration; list of public routes; 403 responses.
+
+      - id: NODE-AUTHZ-002
+        title: Object-level access is checked for every record
+        asvs: V8.2.2
+        level: 1
+        api_top10: [API1:2023]
+        summary: >-
+          Data-specific access is restricted to consumers with explicit permissions to each data
+          item, preventing IDOR and broken object level authorization.
+        verification: |-
+          - Review handlers that load records by `req.params.id` or a body identifier. Confirm
+            the query includes the owner or tenant condition (for example
+            `where: { id, ownerId: user.id }`) or an explicit policy check follows.
+          - Using UUIDs instead of sequential IDs does not replace the check.
+          - Test with two accounts: request the other account's identifiers and expect 403 or
+            404.
+        evidence: >-
+          Query code for key resources; cross-account test results.
+
+      - id: NODE-AUTHZ-003
+        title: Field-level write access is restricted
+        asvs: V8.2.3
+        level: 2
+        related_asvs: [V8.1.2]
+        api_top10: [API3:2023]
+        summary: >-
+          Access to individual fields is restricted to consumers with explicit permissions,
+          mitigating broken object property level authorization.
+        verification: |-
+          - Identify fields only some roles may change (`role`, `isAdmin`, `status`, `tenantId`,
+            `price`, `emailVerified`).
+          - Confirm per-role DTOs or schemas exist for update actions, or that a policy library
+            (for example CASL with field-level rules) filters writable fields.
+          - Submit a restricted field as a low-privilege user and confirm it is not stored.
+        evidence: >-
+          DTOs or schemas per action; database state before and after the test.
+
+      - id: NODE-AUTHZ-004
+        title: Mass assignment is limited to intended fields
+        asvs: V15.3.3
+        level: 2
+        api_top10: [API3:2023]
+        summary: >-
+          Countermeasures prevent setting fields that are not intended for the given controller
+          action.
+        verification: |-
+          - NestJS: confirm the global `ValidationPipe` uses `whitelist: true` and
+            `forbidNonWhitelisted: true`, so properties without class-validator decorators are
+            stripped or rejected.
+          - Express: confirm schemas reject unknown keys (zod `.strict()`, joi default
+            behaviour with `allowUnknown: false`).
+          - Search for `req.body` passed directly to ORM calls: `prisma.x.update({ data:
+            req.body })`, `Model.create(req.body)`, `repository.save(req.body)`,
+            `Object.assign(entity, req.body)` and object spread of `req.body`.
+        evidence: >-
+          Pipe configuration; search output for the patterns above.
+
+      - id: NODE-AUTHZ-005
+        title: Responses return only the fields the consumer needs
+        asvs: V15.3.1
+        level: 1
+        api_top10: [API3:2023]
+        summary: >-
+          The application returns only the required subset of fields from a data object rather
+          than the entire object.
+        verification: |-
+          - Search for handlers returning ORM entities directly. Prefer explicit selection
+            (Prisma `select`, TypeORM `select`) or response DTOs.
+          - NestJS: if `ClassSerializerInterceptor` is used, confirm sensitive properties carry
+            `@Exclude()` or that entities use `@Expose()` allowlisting with
+            `excludeExtraneousValues`.
+          - Inspect responses for password hashes, MFA secrets, reset tokens, internal flags and
+            other users' data.
+        evidence: >-
+          Serialization configuration; sample responses from key endpoints.
+
+      - id: NODE-AUTHZ-006
+        title: Authorization is enforced on the server, not the client
+        asvs: V8.3.1
+        level: 1
+        api_top10: [API5:2023]
+        summary: >-
+          Authorization rules are enforced at a trusted service layer and do not rely on
+          controls the client can manipulate.
+        verification: |-
+          - Confirm features hidden in the frontend are protected by server-side checks.
+          - Confirm roles and identifiers used in decisions come from the verified session or
+            token, never from `req.body`, `req.query`, custom headers or unsigned cookies.
+          - Confirm claims in an unverified JWT (`jwt.decode()`) are never used for decisions.
+        evidence: >-
+          Mapping of UI-gated actions to server-side checks; direct request results.
+
+      - id: NODE-AUTHZ-007
+        title: Tenant isolation is enforced on every query
+        asvs: V8.4.1
+        level: 2
+        api_top10: [API1:2023]
+        summary: >-
+          In multi-tenant applications, cross-tenant controls ensure operations never affect
+          tenants the consumer is not permitted to access.
+        verification: |-
+          - Confirm tenant filtering is centralized (repository layer, Prisma client
+            extensions, or database row-level security) rather than repeated per handler.
+          - Confirm background jobs, queue consumers and raw queries apply the same filter.
+          - Confirm the tenant identifier comes from the authenticated context, not the request.
+        evidence: >-
+          Tenant scoping implementation; cross-tenant test results.
+
+      - id: NODE-AUTHZ-008
+        title: Failed authorization attempts are logged
+        asvs: V16.3.2
+        level: 2
+        summary: >-
+          Failed authorization attempts are logged; at L3 all authorization decisions are
+          logged, including access to sensitive data.
+        verification: |-
+          - Confirm guards, policy checks and `ForbiddenException` (NestJS) or 403 responses
+            (Express) emit a log event with user, route, action and target identifier.
+          - Confirm the log entry excludes the protected data itself.
+        evidence: >-
+          Logging code; sample log entry for a denied request.
+
+  - id: tokens
+    code: TOKEN
+    title: Self-contained tokens (JWT)
+    intro: >-
+      Applies to services that issue or accept JWTs, whether through `jsonwebtoken`, `jose`,
+      `passport-jwt` or `@nestjs/jwt`.
+    items:
+      - id: NODE-TOKEN-001
+        title: Tokens are verified before their claims are used
+        asvs: V9.1.1
+        level: 1
+        api_top10: [API2:2023]
+        summary: >-
+          Self-contained tokens are validated using their digital signature or MAC before their
+          contents are accepted.
+        verification: |-
+          - Search for `jwt.decode(`, `decodeJwt(` and manual `Buffer.from(token.split('.')[1],
+            'base64')`. These do not verify signatures; claims must come from `jwt.verify()`,
+            `jwtVerify()` or `JwtService.verify()`.
+          - Test: alter one payload character and expect 401.
+        evidence: >-
+          Search output; response to a tampered token.
+
+      - id: NODE-TOKEN-002
+        title: Token algorithms are restricted to an allowlist
+        asvs: V9.1.2
+        level: 1
+        api_top10: [API2:2023]
+        summary: >-
+          Only allowlisted algorithms can be used to create and verify self-contained tokens,
+          and the `none` algorithm is never accepted.
+        verification: |-
+          - Confirm every verification call passes an explicit list: `algorithms: ['RS256']` for
+            `jsonwebtoken` and `passport-jwt`, `algorithms` in `jose` `jwtVerify()` options,
+            `verifyOptions.algorithms` in `@nestjs/jwt`.
+          - Confirm symmetric and asymmetric algorithms are not mixed for the same key.
+          - Test: submit tokens with `alg: none` and with `HS256` signed using the public key;
+            both must be rejected.
+        evidence: >-
+          Verification options; responses to the two test tokens.
+
+      - id: NODE-TOKEN-003
+        title: Verification keys come from trusted configuration
+        asvs: V9.1.3
+        level: 1
+        api_top10: [API2:2023]
+        summary: >-
+          Key material used to validate tokens comes from trusted, pre-configured sources for the
+          issuer; attacker-specified sources and keys are not accepted.
+        verification: |-
+          - Confirm the JWKS URL is a fixed configuration value (for example
+            `createRemoteJWKSet(new URL(config.jwksUri))` in `jose`) and that the `jku`, `x5u`
+            and embedded `jwk` header parameters are ignored.
+          - When looking up keys by `kid`, confirm unknown `kid` values fail rather than falling
+            back to a default key or a file path derived from `kid`.
+        evidence: >-
+          Key resolution code; response to a token with a forged `jku` header.
+
+      - id: NODE-TOKEN-004
+        title: Token validity period is enforced
+        asvs: V9.2.1
+        level: 1
+        api_top10: [API2:2023]
+        summary: >-
+          If a token carries a validity period, it is accepted only while the verification time
+          falls within it.
+        verification: |-
+          - `jsonwebtoken` and `passport-jwt` reject expired tokens unless `ignoreExpiration` is
+            set; search for it. Neither requires `exp` to be present, so confirm issued tokens
+            always include it, or use `jose` with `requiredClaims: ['exp']`.
+          - Confirm `clockTolerance` is small (seconds, not minutes) and that `nbf` is honoured.
+        evidence: >-
+          Issuance and verification options; response to an expired token.
+
+      - id: NODE-TOKEN-005
+        title: Tokens are accepted only for their intended type and audience
+        asvs: V9.2.3
+        level: 2
+        related_asvs: [V9.2.2]
+        api_top10: [API2:2023]
+        summary: >-
+          A service accepts only tokens intended for it, for example by validating the JWT `aud`
+          claim against an allowlist.
+        verification: |-
+          - Confirm `audience` and `issuer` are passed to the verification call, and that each
+            service has a distinct audience when several share an issuer.
+          - Confirm token type is checked so that an ID token or refresh token cannot be used as
+            an access token (for example the `typ` header via the `jose` `typ` option, or a
+            dedicated claim), and that refresh tokens use a different key or audience.
+        evidence: >-
+          Verification options; responses to tokens with a wrong audience and a wrong type.
+
+  - id: input-handling
+    code: INPUT
+    title: Input validation and output encoding
+    intro: >-
+      Validation enforces expected structure; encoding and parameterization prevent injection.
+      Neither replaces the other.
+    items:
+      - id: NODE-INPUT-001
+        title: Request input is validated against positive rules
+        asvs: V2.2.1
+        level: 1
+        related_asvs: [V2.1.1]
+        summary: >-
+          Input is validated against business expectations using allowlists of values, patterns
+          and ranges, or against expected structure and logical limits.
+        verification: |-
+          - NestJS: confirm a global `ValidationPipe` and DTOs with class-validator decorators
+            for every body, query and parameter object; parameters need pipes such as
+            `ParseIntPipe` or `ParseUUIDPipe`.
+          - Express: confirm a schema (zod, joi, ajv) validates `req.body`, `req.query` and
+            `req.params` for each route, including type, length, format and enumerations.
+          - Confirm nested objects and arrays are validated (`@ValidateNested()` with
+            `@Type()`, nested zod schemas) and have maximum sizes.
+        evidence: >-
+          Validation setup; examples of rejected invalid payloads.
+
+      - id: NODE-INPUT-002
+        title: Only validated input reaches business logic
+        asvs: V2.2.2
+        level: 1
+        summary: >-
+          Input validation is enforced at a trusted service layer; client-side validation is not
+          relied upon.
+        verification: |-
+          - Confirm handlers use the parsed result of validation (`schema.parse(req.body)`,
+            DTO instances) rather than the raw `req.body`.
+          - Confirm validation shared with a frontend package is also executed on the server.
+        evidence: >-
+          Handler code samples for key endpoints.
+
+      - id: NODE-INPUT-003
+        title: Template output is encoded for its context
+        asvs: V1.2.1
+        level: 1
+        zap: [40012, 40014]
+        summary: >-
+          Output encoding for HTML elements, attributes, comments, CSS and HTTP headers matches
+          the context in which the data is placed.
+        verification: |-
+          - Search for raw output constructs: EJS `<%-`, Handlebars `{{{ }}}` and `SafeString`,
+            Pug `!{}` and `!=`, Nunjucks `| safe`, React `dangerouslySetInnerHTML`.
+          - Confirm escaped output is not used in contexts where HTML escaping is insufficient:
+            unquoted attributes, `href`/`src` without a scheme allowlist, inline event handlers,
+            `<script>` and `<style>` blocks.
+        evidence: >-
+          Search output with a justification per raw output occurrence.
+
+      - id: NODE-INPUT-004
+        title: Database queries are parameterized
+        asvs: V1.2.4
+        level: 1
+        zap: [40018]
+        summary: >-
+          Database queries use parameterized queries or an ORM, and are protected from SQL and
+          other database injection, including NoSQL.
+        verification: |-
+          - SQL: review `pg`/`mysql2` calls for string concatenation instead of placeholders;
+            Prisma `$queryRawUnsafe` / `$executeRawUnsafe` (the tagged-template `$queryRaw` is
+            parameterized); TypeORM `query()` and QueryBuilder `where()` with interpolated
+            strings; Sequelize `literal()` and `query()` without `replacements` or `bind`.
+          - Identifiers (sort columns, directions) cannot be parameterized and need allowlists.
+          - MongoDB: confirm request values are type-checked so objects such as `{"$ne": null}`
+            cannot reach query filters; Mongoose `sanitizeFilter` can enforce this globally.
+            Review `$where` and `$function` usage.
+        evidence: >-
+          Search output with review notes; validation of filter inputs.
+
+      - id: NODE-INPUT-005
+        title: Operating system commands are not built from input
+        asvs: V1.2.5
+        level: 1
+        zap: [90020]
+        summary: >-
+          The application protects against OS command injection by using parameterized OS calls
+          or contextual command-line encoding.
+        verification: |-
+          - Search for `child_process.exec`, `execSync` and `spawn`/`execFile` with
+            `shell: true`. `exec` always runs a shell.
+          - Prefer `execFile` or `spawn` with an argument array and no shell, and prevent
+            option injection by validating arguments and using `--` where supported.
+        evidence: >-
+          Search output with review notes per call site.
+
+      - id: NODE-INPUT-006
+        title: Rich-text HTML is sanitized with a maintained library
+        asvs: V1.3.1
+        level: 1
+        zap: [40014]
+        summary: >-
+          Untrusted HTML from WYSIWYG editors or similar is sanitized with a well-known
+          sanitization library or framework feature.
+        verification: |-
+          - Confirm stored rich text is sanitized with an allowlist-based library such as
+            DOMPurify (with `jsdom` on the server) or `sanitize-html`, with a restrictive
+            configuration.
+          - Regex-based filtering and ad hoc tag stripping do not meet this requirement.
+        evidence: >-
+          Sanitizer configuration and call sites; neutralized test payloads.
+
+      - id: NODE-INPUT-007
+        title: Dynamic code execution is not used with input
+        asvs: V1.3.2
+        level: 1
+        zap: [90019]
+        summary: >-
+          The application avoids `eval()` and other dynamic code execution; where unavoidable,
+          input is sanitized first.
+        verification: |-
+          - Search for `eval(`, `new Function(`, `setTimeout` / `setInterval` with string
+            arguments, `vm.runInContext` / `vm.runInNewContext` and dynamic `require()` or
+            `import()` with input-derived specifiers.
+          - The `vm` module is not a security boundary; it must not be used to run untrusted
+            code.
+        evidence: >-
+          Search output with review notes.
+
+      - id: NODE-INPUT-008
+        title: Code is resistant to prototype pollution
+        asvs: V15.3.6
+        level: 2
+        summary: >-
+          JavaScript code prevents prototype pollution, for example by using `Map` or `Set`
+          instead of object literals for untrusted keys.
+        verification: |-
+          - Search for recursive merge, deep set and clone helpers applied to request data
+            (custom `merge`, `lodash.merge`, `lodash.set`, `lodash.defaultsDeep`, `dot-prop`)
+            and confirm they reject `__proto__`, `constructor` and `prototype` keys.
+          - Confirm lookups keyed by user input use `Map` or `Object.create(null)` and
+            `Object.hasOwn()` checks.
+          - Confirm dependency audit (`npm audit`) shows no known prototype pollution advisories
+            in runtime dependencies.
+        evidence: >-
+          Search output; audit report summary.
+
+      - id: NODE-INPUT-009
+        title: Untrusted data is not deserialized into executable objects
+        asvs: V1.5.2
+        level: 2
+        summary: >-
+          Deserialization of untrusted data restricts object types to prevent deserialization
+          attacks.
+        verification: |-
+          - Confirm untrusted data is parsed with `JSON.parse` or schema-validated formats only.
+          - Search for `node-serialize`, `funcster` and similar libraries that revive functions;
+            `node-serialize` `unserialize()` executes embedded functions (CVE-2017-5941).
+          - YAML: `js-yaml` 4 `load()` uses a safe schema by default; confirm no custom schema
+            adds JavaScript types, and that older 3.x code uses `safeLoad()`.
+        evidence: >-
+          Search output; dependency list.
+
+      - id: NODE-INPUT-010
+        title: Templates are never compiled from user input
+        asvs: V1.3.7
+        level: 2
+        zap: [90035]
+        summary: >-
+          Templates are not built from untrusted input; where unavoidable, input is sanitized or
+          sandboxed.
+        verification: |-
+          - Search for `ejs.render(`, `Handlebars.compile(`, `pug.compile(`, `pug.render(` and
+            `nunjucks.renderString(` with input-derived template strings.
+          - Confirm template names passed to `res.render()` are not taken from request input.
+          - Confirm Express `res.render(view, req.query)` or `req.body` is not used directly;
+            some engines read options such as `settings` from the locals object.
+        evidence: >-
+          Search output with review notes.
+
+      - id: NODE-INPUT-011
+        title: Outbound requests to user-supplied URLs are restricted
+        asvs: V1.3.6
+        level: 2
+        related_asvs: [V15.3.2]
+        api_top10: [API7:2023, API10:2023]
+        zap: [40046]
+        summary: >-
+          The application protects against SSRF by validating untrusted data against an
+          allowlist of protocols, domains, paths and ports.
+        verification: |-
+          - Locate `fetch`, `axios`, `got`, `undici` and `http.request` calls with input-derived
+            URLs (webhooks, link previews, imports).
+          - Confirm the scheme is `https`, the host is allowlisted or its resolved addresses are
+            checked against private, loopback and link-local ranges (including
+            `169.254.169.254`), and the check applies to the address actually connected to (for
+            example a custom `lookup` function), not only to a pre-flight DNS lookup.
+          - Confirm redirects are disabled (`redirect: 'manual'` in `fetch`, `maxRedirects: 0`
+            in axios) or re-validated per hop.
+        evidence: >-
+          Call sites and validation code; test results against internal addresses.
+
+      - id: NODE-INPUT-012
+        title: Repeated query parameters cannot bypass validation
+        asvs: V15.3.7
+        level: 2
+        summary: >-
+          The application defends against HTTP parameter pollution, particularly where the
+          framework does not distinguish the source of parameters.
+        verification: |-
+          - Repeated keys such as `?role=a&role=b` become arrays with both Express query
+            parsers. The `extended` parser (`qs`, the Express 4 default) also builds nested
+            objects from `?filter[$ne]=x`; Express 5 defaults to the `simple` parser.
+          - Confirm schemas assert scalar types for scalar parameters so arrays and objects are
+            rejected.
+          - Confirm the application does not merge `req.query`, `req.body` and `req.params` into
+            one object before validation.
+        evidence: >-
+          Validation schema for query parameters; responses to duplicated parameters.
+
+      - id: NODE-INPUT-013
+        title: Regular expressions are safe from catastrophic backtracking
+        asvs: V1.3.12
+        level: 3
+        api_top10: [API4:2023]
+        summary: >-
+          Regular expressions avoid exponential backtracking, and untrusted input is constrained
+          to mitigate ReDoS.
+        verification: |-
+          - Node.js runs JavaScript on one thread, so a single slow regular expression blocks
+            all requests. Review patterns applied to request data for nested quantifiers and
+            overlapping alternations, such as `(a+)+` or `(\w|\d)+`.
+          - Confirm input length is bounded before matching and consider a linear-time engine
+            (for example `re2`) for user-supplied or complex patterns.
+          - Confirm no user-supplied pattern is passed to `new RegExp()` without escaping.
+        evidence: >-
+          List of reviewed patterns; static analysis output (for example ESLint
+          `regexp/no-super-linear-backtracking` from `eslint-plugin-regexp`).
+
+  - id: api
+    code: API
+    title: API and web service configuration
+    intro: >-
+      Configuration items that apply to JSON and GraphQL APIs and to the HTTP surface of the
+      service.
+    items:
+      - id: NODE-API-001
+        title: Endpoints are rate limited per consumer
+        asvs: V2.4.1
+        level: 2
+        api_top10: [API4:2023, API6:2023]
+        summary: >-
+          Anti-automation controls protect against excessive calls that could cause data
+          exfiltration, garbage data, quota exhaustion or denial of service.
+        verification: |-
+          - Confirm a global limit and stricter per-route limits for expensive or abusable flows
+            (exports, search, messaging, checkout, signup).
+          - Confirm limits are keyed by user ID when authenticated and use a shared store across
+            instances.
+          - Confirm request body size limits are explicit (`express.json({ limit })`, Nest body
+            parser options) and that pagination has a maximum page size.
+        evidence: >-
+          Limiter and body parser configuration; 429 response sample.
+
+      - id: NODE-API-002
+        title: CORS allows only trusted origins
+        asvs: V3.4.2
+        level: 1
+        api_top10: [API8:2023]
+        zap: [40040, 10098]
+        summary: >-
+          The `Access-Control-Allow-Origin` header is a fixed value, or the request Origin is
+          validated against an allowlist of trusted origins.
+        verification: |-
+          - `cors({ origin: true })` and `app.enableCors()` without options reflect or allow any
+            origin. Confirm `origin` is an explicit array or a function that checks an allowlist.
+          - Confirm `credentials: true` is never combined with a reflecting or wildcard origin.
+          - Review origin regular expressions for missing anchors and unescaped dots.
+          - Test with `Origin: https://attacker.invalid`.
+        evidence: >-
+          CORS configuration; response headers for allowed and disallowed origins.
+
+      - id: NODE-API-003
+        title: Responses declare an accurate Content-Type
+        asvs: V4.1.1
+        level: 1
+        api_top10: [API8:2023]
+        summary: >-
+          Every response with a body has a Content-Type that matches the content, with a safe
+          character encoding.
+        verification: |-
+          - `res.json()` sets `application/json; charset=utf-8`. `res.send()` with a string
+            defaults to `text/html; charset=utf-8`; confirm API handlers do not send strings
+            that include input, or set the type explicitly with `res.type()`.
+          - Confirm file downloads set `Content-Type`, `Content-Disposition: attachment` and
+            `X-Content-Type-Options: nosniff` (Helmet sets the latter by default).
+        evidence: >-
+          Response headers for JSON, text and download endpoints.
+
+      - id: NODE-API-004
+        title: Errors return generic messages in production
+        asvs: V16.5.1
+        level: 2
+        related_asvs: [V13.4.2]
+        api_top10: [API8:2023]
+        zap: [10023, 90022]
+        summary: >-
+          A generic message is returned when an unexpected or security-sensitive error occurs,
+          without stack traces, queries, keys or tokens.
+        verification: |-
+          - Express's default error handler includes the stack trace in the response unless
+            `NODE_ENV` is `production`. Confirm `NODE_ENV=production` and a custom final error
+            handler that returns a generic body.
+          - NestJS's built-in exception filter returns a generic 500 for unknown errors; confirm
+            custom filters do not return `exception.message` or `stack` for non-HTTP exceptions.
+          - Confirm validation error output does not echo internal class or field metadata
+            beyond what clients need.
+        evidence: >-
+          Error handler code; sample error response from staging.
+
+      - id: NODE-API-005
+        title: Documentation and monitoring endpoints are not publicly exposed
+        asvs: V13.4.5
+        level: 2
+        related_asvs: [V15.2.3]
+        api_top10: [API9:2023]
+        summary: >-
+          Documentation (such as internal API docs) and monitoring endpoints are not exposed
+          unless explicitly intended.
+        verification: |-
+          - Check for `SwaggerModule.setup()` (NestJS), `swagger-ui-express`, GraphQL
+            playgrounds, `/metrics` (prom-client), health endpoints with dependency details and
+            debug routes. Confirm each is disabled in production, bound to an internal port, or
+            authenticated.
+          - Request each path unauthenticated against the production host.
+        evidence: >-
+          Bootstrap code showing environment conditions; HTTP responses for each path.
+
+      - id: NODE-API-006
+        title: Client IP and scheme are derived from trusted proxies only
+        asvs: V15.3.4
+        level: 2
+        related_asvs: [V4.1.3]
+        api_top10: [API8:2023]
+        summary: >-
+          Proxies and middleware transfer the original client IP using trusted fields that the
+          end user cannot manipulate, and that value is used for logging and security decisions.
+        verification: |-
+          - Review `app.set('trust proxy', ...)`. `true` trusts every `X-Forwarded-For` hop, so a
+            client can choose its own `req.ip` and bypass IP-keyed rate limits. Use the number
+            of proxy hops or the proxy addresses.
+          - Confirm code does not read `X-Forwarded-For` or `X-Real-IP` headers directly.
+          - Test with a spoofed `X-Forwarded-For` sent directly to the service.
+        evidence: >-
+          Proxy configuration; log or debug output from the spoofing test.
+
+      - id: NODE-API-007
+        title: Source control metadata and environment files are not served
+        asvs: V13.4.1
+        level: 1
+        api_top10: [API8:2023]
+        zap: [40035, 40034]
+        summary: >-
+          The application is deployed without source control metadata such as `.git`, or that
+          metadata is inaccessible externally and to the application.
+        verification: |-
+          - Confirm `express.static()` and `ServeStaticModule` serve a dedicated directory
+            (`public/`, `dist/client/`), never the project root.
+          - Request `/.git/HEAD`, `/.env` and `/package.json` and expect 404.
+          - Prefer container images built from a `.dockerignore` that excludes `.git` and
+            `.env` files.
+        evidence: >-
+          Static file configuration; `.dockerignore`; HTTP responses for the paths above.
+
+      - id: NODE-API-008
+        title: GraphQL queries are limited in depth and cost
+        asvs: V4.3.1
+        level: 2
+        related_asvs: [V4.3.2]
+        api_top10: [API4:2023]
+        summary: >-
+          Query allowlisting, depth limiting, amount limiting or cost analysis prevents denial of
+          service through expensive nested GraphQL queries.
+        verification: |-
+          - Applies when Apollo Server, GraphQL Yoga or `@nestjs/graphql` is used.
+          - Confirm validation rules for depth and complexity (for example
+            `graphql-depth-limit` or a cost analysis plugin), maximum list sizes, and batching
+            limits.
+          - Apollo Server disables introspection by default only when `NODE_ENV` is
+            `production`; confirm the setting is explicit.
+        evidence: >-
+          Server configuration; response to an over-limit query.
+
+      - id: NODE-API-009
+        title: WebSocket handshakes validate the Origin header
+        asvs: V4.4.2
+        level: 2
+        api_top10: [API8:2023]
+        summary: >-
+          During the WebSocket handshake, the Origin header is checked against the origins
+          allowed for the application.
+        verification: |-
+          - `ws`: confirm the `upgrade` handler or `verifyClient` rejects origins outside the
+            allowlist.
+          - Socket.IO: the `cors` option controls HTTP long-polling responses; confirm
+            `allowRequest` also checks `req.headers.origin` so the WebSocket transport is
+            covered.
+          - Confirm authentication happens during the handshake and per-room or per-event
+            authorization is enforced.
+        evidence: >-
+          WebSocket server configuration; handshake test with a disallowed origin.
