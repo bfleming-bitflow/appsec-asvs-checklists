@@ -1,0 +1,44 @@
+# ZAP scan rule (alert) identifiers referenced by the checklists.
+# Each entry was checked against https://www.zaproxy.org/docs/alerts/<id>/
+# Only rules that produce evidence relevant to a checklist item are listed.
+alerts:
+  - id: 3
+    name: Session ID in URL Rewrite
+  - id: 10010
+    name: Cookie No HttpOnly Flag
+  - id: 10011
+    name: Cookie Without Secure Flag
+  - id: 10023
+    name: Information Disclosure - Debug Error Messages
+  - id: 10054
+    name: Cookie without SameSite Attribute
+  - id: 10098
+    name: Cross-Domain Misconfiguration
+  - id: 10105
+    name: Weak Authentication Method
+  - id: 40012
+    name: Cross Site Scripting (Reflected)
+  - id: 40013
+    name: Session Fixation
+  - id: 40014
+    name: Cross Site Scripting (Persistent)
+  - id: 40018
+    name: SQL Injection
+  - id: 40034
+    name: .env Information Leak
+  - id: 40035
+    name: Hidden File Found
+  - id: 40040
+    name: CORS Header
+  - id: 40046
+    name: Server Side Request Forgery
+  - id: 90019
+    name: Server Side Code Injection
+  - id: 90020
+    name: Remote OS Command Injection
+  - id: 90022
+    name: Application Error Disclosure
+  - id: 90023
+    name: XML External Entity Attack
+  - id: 90035
+    name: Server Side Template Injection
