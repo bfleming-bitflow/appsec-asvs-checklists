@@ -1,0 +1,1079 @@
+---
+schema_version: 1
+stack:
+  id: laravel
+  name: Laravel
+  prefix: LAR
+  scope: >-
+    Verification checklist for Laravel applications (Laravel 11 and later, PHP 8.2 and later),
+    covering server-rendered Blade applications and JSON APIs authenticated with sessions,
+    Laravel Sanctum, Laravel Passport or third-party JWT packages.
+standards:
+  asvs: "5.0.0"
+  api_top10: "2023"
+sections:
+  - id: authentication
+    code: AUTHN
+    title: Authentication
+    intro: >-
+      Covers password policy, credential storage, brute-force resistance and account
+      lifecycle. Starter kits (Breeze, Jetstream, Fortify) implement part of this; verify the
+      code that is actually deployed rather than the starter kit defaults.
+    items:
+      - id: LAR-AUTHN-001
+        title: Minimum password length is enforced server-side
+        asvs: V6.2.1
+        level: 1
+        api_top10: [API2:2023]
+        summary: >-
+          User-chosen passwords must be at least 8 characters; 15 or more is strongly recommended.
+        verification: |-
+          - Locate the password rule used by registration, password change and password reset
+            (FormRequest classes, `Validator::make` calls, Fortify `PasswordValidationRules`).
+          - Prefer defining the policy once with `Password::defaults(fn () => ...)` in a service
+            provider and referencing it with `Password::defaults()` in every rule set, so the
+            three flows cannot drift apart.
+          - Confirm the effective minimum is `Password::min(8)` or higher.
+          - Submit a 7-character password to each flow and confirm a 422 response.
+        evidence: >-
+          Path and line of the `Password::defaults()` definition and of each rule set that uses it;
+          request/response pair showing rejection of a short password.
+
+      - id: LAR-AUTHN-002
+        title: No character composition rules are imposed
+        asvs: V6.2.5
+        level: 1
+        api_top10: [API2:2023]
+        summary: >-
+          Passwords of any composition are accepted; there is no requirement for upper or lower
+          case letters, digits or special characters.
+        verification: |-
+          - Search for `->mixedCase()`, `->letters()`, `->numbers()` and `->symbols()` on
+            `Password` rules, and for custom `regex:` rules applied to password fields.
+          - Any of these imposes a composition rule and fails this requirement. Length and
+            breached-password checks are the intended replacement.
+        evidence: >-
+          Search output (`grep -rn "mixedCase\|symbols()\|numbers()" app/`) showing no composition
+          rules, or the rule set that was changed.
+
+      - id: LAR-AUTHN-003
+        title: New passwords are checked against breached password data
+        asvs: V6.2.12
+        level: 2
+        related_asvs: [V6.2.4]
+        api_top10: [API2:2023]
+        summary: >-
+          Passwords submitted at registration or change are checked against a set of breached
+          passwords.
+        verification: |-
+          - Confirm the password rule includes `->uncompromised()`. Laravel implements it with the
+            Have I Been Pwned range API using k-anonymity; only a hash prefix leaves the server.
+          - Decide and document the behaviour when the range API is unreachable. The default
+            verifier treats a failed lookup as not compromised (fail open).
+          - Confirm outbound HTTPS to `api.pwnedpasswords.com` is allowed from production, or
+            that an offline breached-password list is used instead.
+        evidence: >-
+          Rule definition including `uncompromised()`; test or manual request showing a known
+          breached password (for example `password123456`) is rejected.
+
+      - id: LAR-AUTHN-004
+        title: Long passwords are accepted and verified without truncation
+        asvs: V6.2.9
+        level: 2
+        related_asvs: [V6.2.8]
+        api_top10: [API2:2023]
+        summary: >-
+          Passwords of at least 64 characters are permitted and are verified exactly as received.
+        verification: |-
+          - Check that no `max:` rule below 64 is applied to password fields.
+          - Laravel's default hasher is bcrypt, which only processes the first 72 bytes of input.
+            A 73-byte password and its first 72 bytes produce the same hash. Either switch the
+            driver to `argon2id` in `config/hashing.php`, or reject inputs longer than 72 bytes
+            with an explicit error instead of silently truncating.
+          - Confirm no middleware or mutator trims, lowercases or otherwise transforms the
+            password before hashing (`TrimStrings` excludes `password` and
+            `password_confirmation` by default; check that custom field names are excluded too).
+        evidence: >-
+          `config/hashing.php` driver setting; test showing a 64-character password can be set
+          and used to log in; `TrimStrings` exclusion list.
+
+      - id: LAR-AUTHN-005
+        title: Passwords are stored with an approved password hashing function
+        asvs: V11.4.2
+        level: 2
+        summary: >-
+          Passwords are stored using a computationally intensive key derivation function with
+          parameters set according to current guidance.
+        verification: |-
+          - Confirm passwords are written through `Hash::make()` or the `hashed` model cast, never
+            with `md5()`, `sha1()`, `hash()` or reversible encryption.
+          - Review `config/hashing.php`: bcrypt cost (`BCRYPT_ROUNDS`, default 12) or Argon2id
+            memory, time and thread parameters. Compare them with the OWASP Password Storage
+            Cheat Sheet.
+          - Confirm `Hash::needsRehash()` or Laravel's automatic rehash on login is active so that
+            parameter increases apply to existing users.
+        evidence: >-
+          `config/hashing.php`; the user model cast or the write path; a sample stored hash
+          prefix (`$2y$12$` or `$argon2id$`) from a non-production database.
+
+      - id: LAR-AUTHN-006
+        title: Login is protected against brute force and credential stuffing
+        asvs: V6.3.1
+        level: 1
+        related_asvs: [V6.1.1]
+        api_top10: [API2:2023, API4:2023]
+        summary: >-
+          Controls against credential stuffing and password brute force are implemented as
+          defined in the application's security documentation.
+        verification: |-
+          - Identify every credential-accepting endpoint: web login, API token issuance, password
+            confirmation, two-factor challenge and password reset.
+          - Confirm each is rate limited. Breeze uses `LoginRequest::ensureIsNotRateLimited()`;
+            Fortify uses the `login` and `two-factor` limiters; custom endpoints need
+            `throttle:` middleware or `RateLimiter::attempt()`.
+          - The throttle key should combine the account identifier and client IP so that one
+            account cannot be locked by a single source and many accounts cannot be sprayed
+            from one source without limit.
+          - Confirm the client IP used by the limiter is correct behind proxies (see the trusted
+            proxy item).
+        evidence: >-
+          Limiter definitions and route middleware; output of repeated failed logins showing
+          HTTP 429 after the documented threshold.
+
+      - id: LAR-AUTHN-007
+        title: Authentication responses do not reveal whether an account exists
+        asvs: V6.3.8
+        level: 3
+        api_top10: [API2:2023]
+        summary: >-
+          Valid users cannot be inferred from error messages, status codes or response timing in
+          login, registration and password reset.
+        verification: |-
+          - Login: the default message `auth.failed` is generic. Check that custom code does not
+            return different messages for unknown user and wrong password.
+          - Password reset: `Password::sendResetLink()` returns `Password::INVALID_USER` for
+            unknown addresses, and Breeze displays it as a validation error. Return the same
+            response for every submitted address.
+          - Registration: a `unique:users,email` rule discloses existing accounts. Where this
+            matters, accept the request and notify the existing account owner by email instead.
+          - Compare response times for existing and non-existing accounts; a missing user must
+            not skip the password hash computation.
+        evidence: >-
+          Side-by-side responses (status, body, timing over repeated requests) for an existing
+          and a non-existing account in each flow.
+
+      - id: LAR-AUTHN-008
+        title: No default or seeded accounts exist in production
+        asvs: V6.3.2
+        level: 1
+        summary: >-
+          Default accounts such as "admin" or "root" are not present or are disabled.
+        verification: |-
+          - Review `database/seeders`. The default `DatabaseSeeder` creates `test@example.com`
+            and `UserFactory` uses the password `password`.
+          - Confirm seeders that create users are not run in production deployment scripts
+            (`php artisan db:seed --force`) or are guarded by `app()->environment()` checks.
+          - Query the production user table for well-known addresses and names (`admin`,
+            `test@example.com`, `*@example.com`).
+        evidence: >-
+          Seeder code review notes; deployment script; result of the production query (counts
+          only, no personal data).
+
+      - id: LAR-AUTHN-009
+        title: Password reset does not bypass multi-factor authentication
+        asvs: V6.4.3
+        level: 2
+        api_top10: [API2:2023]
+        summary: >-
+          Forgotten-password recovery is secure and does not bypass any enabled multi-factor
+          authentication.
+        verification: |-
+          - Check whether the reset flow logs the user in. The `ResetsPasswords` trait from
+            `laravel/ui` calls `guard()->login()` after reset; Breeze and Fortify redirect to
+            the login page instead.
+          - If the user is logged in after reset, confirm the second factor is still required
+            before an authenticated session is established.
+          - Confirm reset tokens expire (`auth.passwords.*.expire`, default 60 minutes) and are
+            single use, and that throttling (`auth.passwords.*.throttle`) is configured.
+        evidence: >-
+          Reset controller code; recorded flow for an MFA-enabled test account showing the second
+          factor prompt after reset.
+
+      - id: LAR-AUTHN-010
+        title: One-time passwords cannot be replayed
+        asvs: V6.5.1
+        level: 2
+        api_top10: [API2:2023]
+        summary: >-
+          Lookup secrets (recovery codes), out-of-band codes and TOTP values can be used
+          successfully only once.
+        verification: |-
+          - For TOTP, submit the same valid code twice within its time window. The second
+            attempt must fail. With `pragmarx/google2fa` this requires `verifyKeyNewer()` and
+            persisting the last accepted timestamp; plain `verifyKey()` accepts replays.
+          - For recovery codes, confirm the used code is removed or replaced. Fortify replaces a
+            used recovery code via `replaceRecoveryCode()`.
+          - For email or SMS codes, confirm the stored code is deleted on first successful use.
+        evidence: >-
+          Code path for each factor; request log showing the replayed code being rejected.
+
+      - id: LAR-AUTHN-011
+        title: Authentication events are logged
+        asvs: V16.3.1
+        level: 2
+        summary: >-
+          All authentication operations, successful and unsuccessful, are logged with relevant
+          metadata such as authentication type or factors used.
+        verification: |-
+          - Confirm listeners exist for `Illuminate\Auth\Events\Login`, `Failed`, `Lockout`,
+            `Logout`, `PasswordReset` and, where used, two-factor events.
+          - Each record should include timestamp, user identifier (or attempted identifier),
+            client IP, user agent and outcome.
+          - Confirm passwords, tokens and session identifiers are never logged; the `Failed`
+            event carries the submitted credentials array, so log only the identifier field.
+        evidence: >-
+          Listener registration and a sample log entry for a successful and a failed login from
+          a non-production environment.
+
+  - id: session-management
+    code: SESS
+    title: Session management
+    intro: >-
+      Applies to cookie-based sessions (`web` guard and Sanctum SPA authentication). Token-based
+      API authentication is covered in the Tokens section.
+    items:
+      - id: LAR-SESS-001
+        title: Session identifier is regenerated on authentication
+        asvs: V7.2.4
+        level: 1
+        api_top10: [API2:2023]
+        zap: [40013]
+        summary: >-
+          A new session token is generated on authentication and re-authentication, and the
+          previous token is terminated.
+        verification: |-
+          - `SessionGuard::login()` migrates the session ID, so `Auth::attempt()` and
+            `Auth::login()` comply. Breeze and Fortify additionally call
+            `$request->session()->regenerate()`.
+          - Review custom login paths (social login callbacks, impersonation, magic links,
+            `Auth::loginUsingId()`, manual `session()->put('user_id', ...)`) and confirm each
+            results in a regenerated session ID.
+          - Test: record the session cookie before login, authenticate, confirm the value
+            changed and the old value no longer authenticates.
+        evidence: >-
+          Cookie values before and after login; list of reviewed custom login paths.
+
+      - id: LAR-SESS-002
+        title: Logout invalidates the session on the server
+        asvs: V7.4.1
+        level: 1
+        api_top10: [API2:2023]
+        summary: >-
+          When a session is terminated by logout or expiry, it cannot be used again.
+        verification: |-
+          - Confirm logout calls `Auth::guard('web')->logout()`,
+            `$request->session()->invalidate()` and `$request->session()->regenerateToken()`.
+          - For Sanctum personal access tokens, confirm logout deletes the token with
+            `$request->user()->currentAccessToken()->delete()`.
+          - Test: copy the session cookie, log out, replay a request with the copied cookie and
+            confirm it is unauthenticated.
+        evidence: >-
+          Logout controller code; replay request and response after logout.
+
+      - id: LAR-SESS-003
+        title: Session cookie has the Secure attribute and a secure prefix
+        asvs: V3.3.1
+        level: 1
+        related_asvs: [V3.3.3]
+        zap: [10011]
+        summary: >-
+          Cookies have the Secure attribute; if the `__Host-` prefix is not used, the
+          `__Secure-` prefix is used.
+        verification: |-
+          - `config/session.php`: `secure` must be `true` in production (`SESSION_SECURE_COOKIE`).
+          - Set the cookie name (`SESSION_COOKIE`) to start with `__Host-`, which also requires
+            `path` `/` and no `domain`. Use `__Secure-` only if the cookie must be shared across
+            subdomains.
+          - Apply the same to the `XSRF-TOKEN` cookie if the frontend does not read it from a
+            renamed cookie, and to any application cookies set with `cookie()`.
+        evidence: >-
+          `Set-Cookie` response headers captured from production or staging.
+
+      - id: LAR-SESS-004
+        title: Session cookie is not readable by client-side scripts
+        asvs: V3.3.4
+        level: 2
+        zap: [10010]
+        summary: >-
+          Cookies that client-side scripts do not need, such as session tokens, have the HttpOnly
+          attribute.
+        verification: |-
+          - `config/session.php`: `http_only` is `true` (the default).
+          - Confirm the session identifier is not also exposed in a response body, a JavaScript
+            variable or a non-HttpOnly cookie.
+          - The `XSRF-TOKEN` cookie is intentionally readable; it is not a session token.
+        evidence: >-
+          `Set-Cookie` header for the session cookie showing `httponly`.
+
+      - id: LAR-SESS-005
+        title: SameSite is set according to cookie purpose
+        asvs: V3.3.2
+        level: 2
+        zap: [10054]
+        summary: >-
+          Each cookie's SameSite value fits its purpose, limiting cross-site request forgery and
+          UI redress exposure.
+        verification: |-
+          - `config/session.php`: `same_site` defaults to `lax`. Use `strict` if no cross-site
+            top-level navigation needs an authenticated session.
+          - `none` requires a documented reason (for example embedded third-party flows) and
+            must be combined with `Secure`.
+          - Confirm CSRF protection (`VerifyCsrfToken` / `ValidateCsrfToken`) remains enabled
+            regardless of SameSite, and review the `except` list.
+        evidence: >-
+          `Set-Cookie` headers; CSRF middleware exception list.
+
+      - id: LAR-SESS-006
+        title: Inactivity timeout enforces re-authentication
+        asvs: V7.3.1
+        level: 2
+        related_asvs: [V7.1.1]
+        summary: >-
+          An inactivity timeout forces re-authentication according to documented risk decisions.
+        verification: |-
+          - `config/session.php`: `lifetime` (minutes, `SESSION_LIFETIME`) is an idle timeout;
+            each request extends it. Confirm the value matches the documented decision.
+          - Confirm "remember me" is either disabled or its lifetime is documented, because the
+            remember-me cookie re-authenticates silently after the session expires.
+          - Test: authenticate, stay idle beyond the configured lifetime, confirm the next
+            request requires login.
+        evidence: >-
+          Configuration value; documented decision; test result.
+
+      - id: LAR-SESS-007
+        title: Absolute session lifetime is enforced
+        asvs: V7.3.2
+        level: 2
+        related_asvs: [V7.1.1]
+        summary: >-
+          An absolute maximum session lifetime forces re-authentication regardless of activity.
+        verification: |-
+          - Laravel has no built-in absolute timeout. Confirm a middleware stores the
+            authentication time in the session at login and logs the user out once the
+            documented maximum is exceeded.
+          - Confirm the same limit applies to "remember me" re-authentication and to Sanctum
+            tokens (`sanctum.expiration`, in minutes; `null` means tokens never expire).
+        evidence: >-
+          Middleware code and registration; `config/sanctum.php` expiration value.
+
+      - id: LAR-SESS-008
+        title: Other sessions can be terminated after a credential change
+        asvs: V7.4.3
+        level: 2
+        summary: >-
+          After changing or removing an authentication factor, the user is offered the option to
+          terminate all other active sessions.
+        verification: |-
+          - `Auth::logoutOtherDevices($password)` invalidates other sessions only when the
+            `AuthenticateSession` middleware (`auth.session`) is applied to authenticated routes.
+            Confirm it is.
+          - Confirm Sanctum tokens other than the current one are revoked when requested
+            (`$user->tokens()->where('id', '!=', $currentId)->delete()`).
+          - Confirm the `remember_token` is cycled so remembered devices are also signed out.
+        evidence: >-
+          Password change controller; middleware configuration; test with two browser sessions.
+
+      - id: LAR-SESS-009
+        title: Sensitive account changes require re-authentication
+        asvs: V7.5.1
+        level: 2
+        api_top10: [API2:2023]
+        summary: >-
+          Full re-authentication is required before changing attributes that affect
+          authentication, such as email, phone, MFA configuration or recovery data.
+        verification: |-
+          - Confirm routes that change email, password, MFA settings and recovery codes use the
+            `password.confirm` middleware or an equivalent challenge.
+          - Review `auth.password_timeout` (seconds, default 10800). A three-hour window may be
+            too long for high-risk changes; document the chosen value.
+          - For APIs, confirm the endpoint requires the current password or a fresh second
+            factor in the request.
+        evidence: >-
+          Route list (`php artisan route:list -v`) showing middleware; configuration value.
+
+      - id: LAR-SESS-010
+        title: Disabling an account terminates its sessions and tokens
+        asvs: V7.4.2
+        level: 1
+        api_top10: [API2:2023]
+        summary: >-
+          All active sessions are terminated when a user account is disabled or deleted.
+        verification: |-
+          - With `SESSION_DRIVER=database`, confirm the disable or delete action removes rows
+            from the `sessions` table for that `user_id`. Other drivers need an equivalent
+            mechanism or a per-request check of the account status.
+          - Confirm Sanctum tokens (`$user->tokens()->delete()`) and Passport tokens are revoked.
+          - Confirm the remember token is cycled.
+        evidence: >-
+          Code of the disable/delete action; test showing an existing session is rejected after
+          the account is disabled.
+
+  - id: access-control
+    code: AUTHZ
+    title: Access control
+    intro: >-
+      Laravel provides gates, policies and middleware, but none of them is applied implicitly.
+      Every route and every query that returns user-scoped data needs an explicit decision.
+    items:
+      - id: LAR-AUTHZ-001
+        title: Function-level access requires explicit permission
+        asvs: V8.2.1
+        level: 1
+        api_top10: [API5:2023]
+        summary: >-
+          Access to functions is restricted to consumers with explicit permissions.
+        verification: |-
+          - Export the route table (`php artisan route:list --json`) and confirm every non-public
+            route has authentication middleware and an authorization check (`can:` middleware,
+            `Gate::authorize()`, `$this->authorize()` or a FormRequest `authorize()` method).
+          - FormRequest `authorize()` returning `true` unconditionally is not an authorization
+            check.
+          - Test administrative routes with a low-privilege account and expect HTTP 403.
+        evidence: >-
+          Route table with middleware column; list of routes intentionally public; 403 responses.
+
+      - id: LAR-AUTHZ-002
+        title: Object-level access is checked for every record
+        asvs: V8.2.2
+        level: 1
+        api_top10: [API1:2023]
+        summary: >-
+          Data-specific access is restricted to consumers with explicit permissions to each data
+          item, preventing IDOR and broken object level authorization.
+        verification: |-
+          - Route model binding (`/orders/{order}`) loads any record by key. Confirm a policy
+            check follows (`$this->authorize('view', $order)`) or the binding is scoped
+            (`->scopeBindings()`, or querying through the relationship
+            `$request->user()->orders()->findOrFail($id)`).
+          - Review `find()`, `findOrFail()` and `where('id', ...)` calls that take request input.
+          - Test with two accounts: request the other account's record identifiers and expect
+            403 or 404.
+        evidence: >-
+          Policy classes and controller calls; cross-account test results.
+
+      - id: LAR-AUTHZ-003
+        title: Field-level write access is restricted
+        asvs: V8.2.3
+        level: 2
+        related_asvs: [V8.1.2]
+        api_top10: [API3:2023]
+        summary: >-
+          Access to individual fields is restricted to consumers with explicit permissions,
+          mitigating broken object property level authorization.
+        verification: |-
+          - Identify fields that only some roles may change (`role`, `is_admin`, `status`,
+            `tenant_id`, `price`, `email_verified_at`).
+          - Confirm validation rules for each update action list only the fields the current
+            role may set, for example with conditional rules based on `$this->user()->can()`.
+          - Submit an update with a restricted field as a low-privilege user and confirm the
+            stored value is unchanged.
+        evidence: >-
+          FormRequest rules per action; request and database state before and after the test.
+
+      - id: LAR-AUTHZ-004
+        title: Mass assignment is limited to intended fields
+        asvs: V15.3.3
+        level: 2
+        api_top10: [API3:2023]
+        summary: >-
+          Countermeasures prevent setting fields that are not intended for the given controller
+          action.
+        verification: |-
+          - Search for `$request->all()`, `$request->input()` without keys and `$request->except()`
+            passed to `create()`, `update()`, `fill()` or `forceFill()`. Use
+            `$request->validated()` or `$request->safe()->only([...])` instead.
+          - Review models with `protected $guarded = [];` or `Model::unguard()`.
+          - Consider `Model::preventSilentlyDiscardingAttributes()` (part of
+            `Model::shouldBeStrict()`) in non-production environments to surface unexpected
+            attributes during testing.
+        evidence: >-
+          Search output for the patterns above; model `$fillable` / `$guarded` definitions.
+
+      - id: LAR-AUTHZ-005
+        title: Responses return only the fields the consumer needs
+        asvs: V15.3.1
+        level: 1
+        api_top10: [API3:2023]
+        summary: >-
+          The application returns only the required subset of fields from a data object rather
+          than the entire object.
+        verification: |-
+          - Search for controllers returning models or collections directly
+            (`return $user;`, `return User::all();`, `response()->json($model)`), which
+            serialize every attribute not listed in `$hidden`.
+          - Prefer API Resources (`JsonResource`) with explicit fields, using `when()` or
+            `$this->when($request->user()->can(...))` for role-dependent fields.
+          - Inspect responses for `password`, `remember_token`, `two_factor_secret`,
+            `two_factor_recovery_codes`, internal flags and other users' data.
+        evidence: >-
+          List of API resources; sample responses from key endpoints.
+
+      - id: LAR-AUTHZ-006
+        title: Authorization is enforced on the server, not the client
+        asvs: V8.3.1
+        level: 1
+        api_top10: [API5:2023]
+        summary: >-
+          Authorization rules are enforced at a trusted service layer and do not rely on
+          controls the client can manipulate.
+        verification: |-
+          - Hiding buttons with `@can` in Blade or with Inertia/Vue/React props is presentation
+            only. Confirm every corresponding route performs its own check.
+          - Confirm no authorization decision uses request-supplied values such as
+            `role`, `is_admin` or `user_id` from the body, query string, headers or cookies.
+        evidence: >-
+          Mapping of UI-gated actions to server-side checks; direct requests to the hidden
+          actions with an unprivileged account.
+
+      - id: LAR-AUTHZ-007
+        title: Tenant isolation is enforced on every query
+        asvs: V8.4.1
+        level: 2
+        api_top10: [API1:2023]
+        summary: >-
+          In multi-tenant applications, cross-tenant controls ensure operations never affect
+          tenants the consumer is not permitted to access.
+        verification: |-
+          - Confirm tenant scoping is applied centrally, for example with a global scope on
+            tenant-owned models, and that `withoutGlobalScope()` / `withoutGlobalScopes()` calls
+            are reviewed and justified.
+          - Confirm raw queries, queued jobs, scheduled commands and exports apply the tenant
+            filter, since they run outside the HTTP request context.
+          - Confirm `tenant_id` is never taken from request input on write.
+        evidence: >-
+          Scope implementation; search results for scope bypasses; cross-tenant test results.
+
+      - id: LAR-AUTHZ-008
+        title: Failed authorization attempts are logged
+        asvs: V16.3.2
+        level: 2
+        summary: >-
+          Failed authorization attempts are logged; at L3 all authorization decisions are
+          logged, including access to sensitive data.
+        verification: |-
+          - Confirm `AuthorizationException` (rendered as 403) is reported with user, route,
+            policy ability and target identifier. Laravel does not report it by default because
+            it is in the internal "do not report" list, so explicit logging is needed (for
+            example a `Gate::after()` callback or an exception reporting callback).
+          - Confirm the log entry does not contain the protected data itself.
+        evidence: >-
+          Logging code; sample log entry for a denied request.
+
+  - id: tokens
+    code: TOKEN
+    title: API tokens
+    intro: >-
+      Sanctum personal access tokens are reference tokens stored hashed in the database.
+      Passport access tokens and tokens from JWT packages are self-contained and must be
+      validated cryptographically on every request.
+    items:
+      - id: LAR-TOKEN-001
+        title: Reference tokens are random, unique and stored hashed
+        asvs: V7.2.3
+        level: 1
+        related_asvs: [V7.2.2]
+        api_top10: [API2:2023]
+        summary: >-
+          Reference tokens are unique, generated with a CSPRNG and have at least 128 bits of
+          entropy.
+        verification: |-
+          - Sanctum `createToken()` generates the secret with `Str::random(40)` (backed by
+            `random_bytes()`) and stores only its SHA-256 hash. Confirm tokens are not created
+            by custom code with `uniqid()`, `rand()`, `mt_rand()` or predictable values.
+          - Confirm no static, shared API keys are used in place of per-user tokens.
+          - Confirm the plain-text token is shown once and not stored or logged.
+        evidence: >-
+          Token creation code; `personal_access_tokens` table schema showing a hashed token
+          column.
+
+      - id: LAR-TOKEN-002
+        title: Self-contained tokens are verified before use
+        asvs: V9.1.1
+        level: 1
+        api_top10: [API2:2023]
+        summary: >-
+          Self-contained tokens are validated using their digital signature or MAC before their
+          contents are accepted.
+        verification: |-
+          - Passport validates its access tokens in `TokenGuard`. Confirm no code decodes a JWT
+            payload with `base64_decode()` or `explode('.', $token)` to read claims.
+          - With `firebase/php-jwt`, confirm claims are only read from the result of
+            `JWT::decode()`.
+          - Test: alter one character of the payload and expect HTTP 401.
+        evidence: >-
+          Token verification code path; response to a tampered token.
+
+      - id: LAR-TOKEN-003
+        title: Token algorithms are restricted to an allowlist
+        asvs: V9.1.2
+        level: 1
+        api_top10: [API2:2023]
+        summary: >-
+          Only allowlisted algorithms can be used to create and verify self-contained tokens,
+          and the `none` algorithm is never accepted.
+        verification: |-
+          - `firebase/php-jwt` 6.x requires a `Key` object that binds a key to one algorithm
+            (`new Key($publicKey, 'RS256')`). Confirm the algorithm is a constant, not a value
+            read from the token header.
+          - For `php-open-source-saver/jwt-auth` or `tymon/jwt-auth`, confirm `JWT_ALGO` is set
+            explicitly and that symmetric and asymmetric keys are not mixed.
+          - Test: submit a token with `alg` set to `none` and to `HS256` signed with the public
+            key; both must be rejected.
+        evidence: >-
+          Configuration and verification code; responses to the two test tokens.
+
+      - id: LAR-TOKEN-004
+        title: Token validity period is enforced
+        asvs: V9.2.1
+        level: 1
+        api_top10: [API2:2023]
+        summary: >-
+          If a token carries a validity period, it is accepted only while the verification time
+          falls within it.
+        verification: |-
+          - Confirm issued tokens include `exp` and that verification rejects expired tokens.
+            `firebase/php-jwt` enforces `exp` and `nbf` when present; check `JWT::$leeway` is a
+            small value.
+          - Passport: review `Passport::tokensExpireIn()` and `refreshTokensExpireIn()`; the
+            defaults are long-lived.
+          - Sanctum (reference tokens): set `sanctum.expiration` or per-token `expires_at`.
+        evidence: >-
+          Configured lifetimes; response to an expired test token.
+
+      - id: LAR-TOKEN-005
+        title: Tokens are accepted only by their intended audience
+        asvs: V9.2.3
+        level: 2
+        related_asvs: [V9.2.2]
+        api_top10: [API2:2023]
+        summary: >-
+          A service accepts only tokens intended for it, for example by validating the JWT `aud`
+          claim against an allowlist.
+        verification: |-
+          - If several services trust the same issuer or key, confirm each validates `aud`
+            (and `iss`) explicitly. `firebase/php-jwt` does not check `aud`; compare it in
+            application code after decoding.
+          - For Passport, confirm client scopes are checked with the `scopes` / `scope`
+            middleware so a token issued for one client purpose cannot call unrelated routes.
+        evidence: >-
+          Audience and issuer checks in code; response to a token minted for another audience.
+
+  - id: input-handling
+    code: INPUT
+    title: Input validation and output encoding
+    intro: >-
+      Validation enforces expected structure; encoding and parameterization prevent injection.
+      Neither replaces the other.
+    items:
+      - id: LAR-INPUT-001
+        title: Request input is validated against positive rules
+        asvs: V2.2.1
+        level: 1
+        related_asvs: [V2.1.1]
+        summary: >-
+          Input is validated against business expectations using allowlists of values, patterns
+          and ranges, or against expected structure and logical limits.
+        verification: |-
+          - Confirm each state-changing endpoint uses a FormRequest or `$request->validate()`
+            with rules covering type, length and format for every accepted field.
+          - Prefer `Rule::in()`, `Rule::enum()`, `integer`, `uuid`, `date_format` and `max:` over
+            free-form `string` rules.
+          - Confirm validation also covers array input (`items.*.quantity`) and nested JSON.
+        evidence: >-
+          List of FormRequest classes per endpoint; examples of rejected invalid payloads.
+
+      - id: LAR-INPUT-002
+        title: Only validated input reaches business logic
+        asvs: V2.2.2
+        level: 1
+        summary: >-
+          Input validation is enforced at a trusted service layer; client-side validation is not
+          relied upon.
+        verification: |-
+          - Confirm controllers pass `$request->validated()` or `$request->safe()` to services,
+            not `$request->all()` or `$request->input()`.
+          - Confirm HTML5 attributes and frontend validation (Livewire, Inertia, Vue) are
+            mirrored by server-side rules. Livewire public properties are client-modifiable and
+            need `#[Validate]` rules or explicit checks.
+        evidence: >-
+          Search results for `$request->all()`; Livewire component rules.
+
+      - id: LAR-INPUT-003
+        title: Blade output is encoded for its context
+        asvs: V1.2.1
+        level: 1
+        zap: [40012, 40014]
+        summary: >-
+          Output encoding for HTML elements, attributes, comments, CSS and HTTP headers matches
+          the context in which the data is placed.
+        verification: |-
+          - `{{ }}` applies `htmlspecialchars` and is safe for HTML element content and quoted
+            attributes. Search for raw output `{!! !!}` and `@php echo` and confirm each value is
+            trusted or sanitized.
+          - `{{ }}` is not sufficient in unquoted attributes, `href`/`src` (use a scheme
+            allowlist to block `javascript:` URLs), inline event handlers or `<style>` blocks.
+          - Review `HtmlString` and `new HtmlString()` usages, which bypass escaping.
+        evidence: >-
+          `grep -rn "{!!" resources/views` output with a justification per occurrence.
+
+      - id: LAR-INPUT-004
+        title: Data embedded in JavaScript is JSON-encoded
+        asvs: V1.2.3
+        level: 1
+        zap: [40012]
+        summary: >-
+          Output encoding is used when building JavaScript or JSON content so that data cannot
+          change the structure of the script.
+        verification: |-
+          - Confirm data passed to inline scripts uses `@json($value)` or `Js::from($value)`,
+            which escape characters such as `<`, `>` and quotes.
+          - Search for `var x = '{{ $value }}'` and `{!! json_encode(...) !!}` patterns;
+            HTML-escaping does not protect JavaScript string contexts.
+        evidence: >-
+          Search results for inline script blocks in `resources/views`.
+
+      - id: LAR-INPUT-005
+        title: Database queries are parameterized
+        asvs: V1.2.4
+        level: 1
+        zap: [40018]
+        summary: >-
+          Database queries use parameterized queries or an ORM, and are protected from SQL and
+          other database injection.
+        verification: |-
+          - Eloquent and the query builder bind values. Review raw expressions: `DB::raw()`,
+            `whereRaw()`, `selectRaw()`, `orderByRaw()`, `havingRaw()`, `DB::statement()`,
+            `DB::select()`. Each must use `?` bindings, never string interpolation.
+          - Column and direction names cannot be bound. Confirm `orderBy($request->sort)` and
+            similar calls validate against an allowlist.
+          - Confirm JSON path arguments (`where('meta->' . $key, ...)`) are allowlisted.
+        evidence: >-
+          Search output for `Raw(` and `DB::` calls with review notes.
+
+      - id: LAR-INPUT-006
+        title: Operating system commands are not built from input
+        asvs: V1.2.5
+        level: 1
+        zap: [90020]
+        summary: >-
+          The application protects against OS command injection by using parameterized OS calls
+          or contextual command-line encoding.
+        verification: |-
+          - Search for `exec`, `shell_exec`, `system`, `passthru`, `proc_open`, `popen` and
+            backticks.
+          - Prefer `Process::run([...])` or Symfony `Process` with an argument array, which does
+            not invoke a shell. A string command passed to `Process::run()` is interpreted by
+            the shell.
+          - Where a shell string is unavoidable, confirm each argument goes through
+            `escapeshellarg()` and that option injection (`--`) is prevented.
+        evidence: >-
+          Search output with review notes per call site.
+
+      - id: LAR-INPUT-007
+        title: Rich-text HTML is sanitized with a maintained library
+        asvs: V1.3.1
+        level: 1
+        zap: [40014]
+        summary: >-
+          Untrusted HTML from WYSIWYG editors or similar is sanitized with a well-known
+          sanitization library or framework feature.
+        verification: |-
+          - Confirm stored rich text is sanitized with an allowlist-based library such as
+            `symfony/html-sanitizer` or HTML Purifier (`mews/purifier`), either on input or
+            immediately before output with `{!! !!}`.
+          - Regex-based or `strip_tags()`-based filtering does not meet this requirement;
+            `strip_tags()` with an allowed-tags list keeps dangerous attributes.
+        evidence: >-
+          Sanitizer configuration and call sites; test payloads that are neutralized.
+
+      - id: LAR-INPUT-008
+        title: Dynamic code execution is not used with input
+        asvs: V1.3.2
+        level: 1
+        zap: [90019]
+        summary: >-
+          The application avoids `eval()` and other dynamic code execution; where unavoidable,
+          input is sanitized first.
+        verification: |-
+          - Search for `eval(`, `assert(` with string arguments, `create_function`,
+            `call_user_func` / `call_user_func_array` and variable functions (`$fn()`) whose
+            name comes from input, and `include` / `require` with input-derived paths.
+          - Confirm dynamic dispatch uses an explicit allowlist mapping.
+        evidence: >-
+          Search output with review notes.
+
+      - id: LAR-INPUT-009
+        title: Untrusted data is not deserialized with unserialize()
+        asvs: V1.5.2
+        level: 2
+        summary: >-
+          Deserialization of untrusted data restricts object types to prevent deserialization
+          attacks.
+        verification: |-
+          - Search for `unserialize(` on any value an attacker can influence (cookies, request
+            data, cache entries shared with other systems). Use `json_decode()`, or pass
+            `['allowed_classes' => false]`.
+          - `Crypt::decrypt()` unserializes by default; use `Crypt::decryptString()` for string
+            payloads. A leaked `APP_KEY` turns any `decrypt()` sink into object injection, so
+            confirm the key is not in the repository and is rotated if it was ever exposed.
+          - Review `phar://` handling in file operations on user-supplied paths.
+        evidence: >-
+          Search output; confirmation of `APP_KEY` storage location.
+
+      - id: LAR-INPUT-010
+        title: XML parsers do not resolve external entities
+        asvs: V1.5.1
+        level: 1
+        zap: [90023]
+        summary: >-
+          XML parsers use a restrictive configuration with external entity resolution disabled,
+          preventing XXE.
+        verification: |-
+          - With PHP 8 and libxml2 2.9 or later, external entity loading is disabled by default.
+            Search for `LIBXML_NOENT`, `LIBXML_DTDLOAD` and `LIBXML_DTDATTR` passed to
+            `simplexml_load_string()`, `DOMDocument::loadXML()` or `XMLReader`, which re-enable
+            entity processing.
+          - Confirm third-party XML, SVG, SAML and spreadsheet libraries in use do not enable
+            these flags.
+        evidence: >-
+          Search output; libxml version (`php -i | grep -i libxml`).
+
+      - id: LAR-INPUT-011
+        title: Comparisons are type-strict
+        asvs: V15.3.5
+        level: 2
+        summary: >-
+          Variables are checked for the correct type and comparisons use strict equality,
+          avoiding type juggling.
+        verification: |-
+          - Search for `==` and `!=` comparisons involving tokens, hashes, roles or identifiers.
+            Loose comparison treats numeric strings such as `"0e123"` and `"0e456"` as equal.
+          - Confirm secrets are compared with `hash_equals()`, and `in_array()` /
+            `array_search()` use the strict third argument where types matter.
+          - Consider `declare(strict_types=1);` and a static analyser (PHPStan or Psalm) rule
+            set that flags loose comparisons.
+        evidence: >-
+          Search output with review notes; static analysis configuration.
+
+      - id: LAR-INPUT-012
+        title: Templates are never compiled from user input
+        asvs: V1.3.7
+        level: 2
+        zap: [90035]
+        summary: >-
+          Templates are not built from untrusted input; where unavoidable, input is sanitized or
+          sandboxed.
+        verification: |-
+          - Search for `Blade::render()`, `Blade::compileString()` and `view()->make()` with
+            input-derived template content or names. Blade compiles to PHP, so user-controlled
+            template strings lead to code execution.
+          - User-editable templates (emails, notifications) should use a logic-less engine with
+            a fixed variable set instead of Blade.
+        evidence: >-
+          Search output; description of how user-editable templates are rendered.
+
+      - id: LAR-INPUT-013
+        title: Outbound requests to user-supplied URLs are restricted
+        asvs: V1.3.6
+        level: 2
+        related_asvs: [V15.3.2]
+        api_top10: [API7:2023, API10:2023]
+        zap: [40046]
+        summary: >-
+          The application protects against SSRF by validating untrusted data against an
+          allowlist of protocols, domains, paths and ports.
+        verification: |-
+          - Locate `Http::` calls, Guzzle clients, `file_get_contents()` and `fopen()` whose URL
+            includes input (webhooks, URL previews, imports, avatar fetching).
+          - Confirm the scheme is limited to `https`, the host is allowlisted or resolved and
+            checked against private, loopback and link-local ranges (including
+            `169.254.169.254`), and the check uses the resolved address that is actually
+            connected to.
+          - Confirm redirects are disabled (`Http::withOptions(['allow_redirects' => false])`)
+            or each hop is re-validated.
+        evidence: >-
+          Call sites and validation code; test results against internal addresses.
+
+  - id: api
+    code: API
+    title: API and web service configuration
+    intro: >-
+      Configuration items that apply to JSON APIs and to the HTTP surface of the application.
+    items:
+      - id: LAR-API-001
+        title: Endpoints are rate limited per consumer
+        asvs: V2.4.1
+        level: 2
+        api_top10: [API4:2023, API6:2023]
+        summary: >-
+          Anti-automation controls protect against excessive calls that could cause data
+          exfiltration, garbage data, quota exhaustion or denial of service.
+        verification: |-
+          - Confirm a limiter is defined (`RateLimiter::for('api', ...)`) keyed by user ID for
+            authenticated requests and by IP otherwise, and applied with `throttle:api`.
+          - Confirm stricter, dedicated limiters exist for expensive or abusable flows: exports,
+            search, SMS or email sending, checkout, invitation and signup.
+          - Confirm the cache store backing the limiter is shared across application instances
+            (Redis or database, not `array` or per-node `file`).
+        evidence: >-
+          Limiter definitions; route middleware; 429 response with `Retry-After` header.
+
+      - id: LAR-API-002
+        title: CORS allows only trusted origins
+        asvs: V3.4.2
+        level: 1
+        api_top10: [API8:2023]
+        zap: [40040, 10098]
+        summary: >-
+          The `Access-Control-Allow-Origin` header is a fixed value, or the request Origin is
+          validated against an allowlist of trusted origins.
+        verification: |-
+          - Review `config/cors.php` (publish it with `php artisan config:publish cors` if it is
+            absent). `allowed_origins` should list explicit origins; `*` must not be combined
+            with `supports_credentials` set to `true`.
+          - Review `allowed_origins_patterns` regular expressions for missing anchors or
+            unescaped dots.
+          - Test: send `Origin: https://attacker.invalid` and confirm the origin is not echoed.
+        evidence: >-
+          `config/cors.php`; response headers for allowed and disallowed origins.
+
+      - id: LAR-API-003
+        title: Responses declare an accurate Content-Type
+        asvs: V4.1.1
+        level: 1
+        api_top10: [API8:2023]
+        summary: >-
+          Every response with a body has a Content-Type that matches the content, with a safe
+          character encoding.
+        verification: |-
+          - `response()->json()` and API Resources send `application/json`. RFC 8259 defines no
+            charset parameter for JSON and requires UTF-8, so its absence is acceptable there.
+          - Confirm endpoints that return strings or files set the type explicitly; a plain
+            string response defaults to `text/html; charset=UTF-8`, which allows reflected
+            content to be rendered as HTML.
+          - Confirm downloads use `response()->download()` or set `Content-Type` and
+            `Content-Disposition: attachment` together with `X-Content-Type-Options: nosniff`.
+        evidence: >-
+          Response headers for JSON, text and download endpoints.
+
+      - id: LAR-API-004
+        title: Errors return generic messages in production
+        asvs: V16.5.1
+        level: 2
+        related_asvs: [V13.4.2]
+        api_top10: [API8:2023]
+        zap: [10023, 90022]
+        summary: >-
+          A generic message is returned when an unexpected or security-sensitive error occurs,
+          without stack traces, queries, keys or tokens.
+        verification: |-
+          - Confirm `APP_DEBUG=false` and `APP_ENV=production` in the deployed environment.
+            With debug enabled, the error page and JSON responses include the stack trace,
+            file paths and request data.
+          - Confirm custom exception rendering does not return `$e->getMessage()` for
+            database or third-party exceptions.
+          - Trigger an error (for example a malformed route parameter that reaches the database)
+            and inspect the response.
+        evidence: >-
+          Environment configuration (values only for `APP_DEBUG` and `APP_ENV`); sample error
+          response.
+
+      - id: LAR-API-005
+        title: Documentation and monitoring endpoints are not publicly exposed
+        asvs: V13.4.5
+        level: 2
+        related_asvs: [V15.2.3]
+        api_top10: [API9:2023]
+        summary: >-
+          Documentation (such as internal API docs) and monitoring endpoints are not exposed
+          unless explicitly intended.
+        verification: |-
+          - Check for Telescope (`/telescope`), Horizon (`/horizon`), Pulse (`/pulse`), Log
+            Viewer, generated API docs (l5-swagger, Scramble) and debug bars. Confirm each is
+            not installed in production or is protected by its authorization gate
+            (`viewTelescope`, `viewHorizon`, `viewPulse`).
+          - Confirm dev dependencies are excluded from production builds
+            (`composer install --no-dev`).
+          - Request each path unauthenticated against the production host.
+        evidence: >-
+          Composer production install command; HTTP responses for each path.
+
+      - id: LAR-API-006
+        title: Client IP and scheme are derived from trusted proxies only
+        asvs: V15.3.4
+        level: 2
+        related_asvs: [V4.1.3]
+        api_top10: [API8:2023]
+        summary: >-
+          Proxies and middleware transfer the original client IP using trusted fields that the
+          end user cannot manipulate, and that value is used for logging and security decisions.
+        verification: |-
+          - Review `trustProxies(at: ...)` in `bootstrap/app.php` (or the `TrustProxies`
+            middleware in older applications). Trusting `*` is only acceptable if the
+            application is reachable exclusively through the proxy.
+          - Test: send `X-Forwarded-For: 203.0.113.10` directly to the application and confirm
+            `$request->ip()`, logs and rate limit keys do not use the spoofed value.
+        evidence: >-
+          Proxy configuration; log entry or debug output from the spoofing test.
+
+      - id: LAR-API-007
+        title: Source control metadata and environment files are not served
+        asvs: V13.4.1
+        level: 1
+        api_top10: [API8:2023]
+        zap: [40035, 40034]
+        summary: >-
+          The application is deployed without source control metadata such as `.git`, or that
+          metadata is inaccessible externally and to the application.
+        verification: |-
+          - Confirm the web server document root is `public/`, not the project root. Serving
+            the project root exposes `.env`, `.git`, `composer.json` and `storage/`.
+          - Request `/.git/HEAD`, `/.env` and `/storage/logs/laravel.log` and expect 404.
+          - Prefer build artifacts that exclude `.git` entirely.
+        evidence: >-
+          Web server configuration (document root); HTTP responses for the paths above.
+
+      - id: LAR-API-008
+        title: GraphQL queries are limited in depth and cost
+        asvs: V4.3.1
+        level: 2
+        related_asvs: [V4.3.2]
+        api_top10: [API4:2023]
+        summary: >-
+          Query allowlisting, depth limiting, amount limiting or cost analysis prevents denial of
+          service through expensive nested GraphQL queries.
+        verification: |-
+          - Applies when Lighthouse or another GraphQL server is used.
+          - Lighthouse: review `security.max_query_depth`, `security.max_query_complexity` and
+            `security.disable_introspection` in `config/lighthouse.php`, and pagination
+            `max_count` limits.
+          - Test a deeply nested query and confirm it is rejected before execution.
+        evidence: >-
+          GraphQL configuration; response to an over-limit query.
+
+      - id: LAR-API-009
+        title: WebSocket handshakes validate the Origin header
+        asvs: V4.4.2
+        level: 2
+        api_top10: [API8:2023]
+        summary: >-
+          During the WebSocket handshake, the Origin header is checked against the origins
+          allowed for the application.
+        verification: |-
+          - Applies when Laravel Reverb or another WebSocket server is used.
+          - Reverb: confirm `allowed_origins` in `config/reverb.php` lists explicit hosts rather
+            than `*`.
+          - Confirm private and presence channels are authorized in `routes/channels.php` with
+            per-channel checks, not `return true;`.
+        evidence: >-
+          WebSocket server configuration; channel authorization callbacks.
