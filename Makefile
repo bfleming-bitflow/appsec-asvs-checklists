@@ -27,7 +27,7 @@ validate:
 	$(BIN)/python tools/checklist.py validate
 
 test:
-	$(BIN)/pytest
+	$(BIN)/pytest --cov=tools --cov-report=term-missing --cov-fail-under=80
 
 render:
 	$(BIN)/python tools/checklist.py render

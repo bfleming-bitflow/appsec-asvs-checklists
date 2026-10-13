@@ -47,7 +47,7 @@ jobs:
         run: python tools/checklist.py validate
 
       - name: Run tests
-        run: pytest
+        run: pytest --cov=tools --cov-report=term-missing --cov-fail-under=80
 
       - name: Check rendered Markdown is up to date
         run: python tools/checklist.py render --check
